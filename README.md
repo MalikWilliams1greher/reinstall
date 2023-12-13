@@ -1,7 +1,7 @@
 # reinstall
 
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/dc679a17751448628fe6d8ac35e26eed)](https://app.codacy.com/gh/MalikWilliams1greher/reinstall/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![CodeFactor](https://www.codefactor.io/repository/github/MalikWilliams1greher/reinstall/badge)](https://www.codefactor.io/repository/github/MalikWilliams1greher/reinstall)
+[![CodeFactor](https://www.codefactor.io/repository/github/bin456789/reinstall/badge)](https://www.codefactor.io/repository/github/bin456789/reinstall)
 
 又一个重装脚本
 
@@ -100,7 +100,7 @@ bash reinstall.sh windows \
 
 使用 `Dism++` 文件菜单 > 打开映像文件，选择要安装的 iso，可以得到映像名称
 
-![image-name](https://github.com/MalikWilliams1greher/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
+![image-name](https://github.com/bin456789/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
 
 #### 其它说明
 
