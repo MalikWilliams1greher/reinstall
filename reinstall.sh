@@ -2,8 +2,8 @@
 # shellcheck disable=SC2086
 
 set -eE
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-github_proxy=raw.fgit.cf
+confhome=https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main
+github_proxy=https://mirror.ghproxy.com
 
 this_script=$(realpath "$0")
 trap 'trap_err $LINENO $?' ERR
@@ -1339,7 +1339,7 @@ esac
 # https://github.com/XIU2/UserScript/blob/master/GithubEnhanced-High-Speed-Download.user.js#L31
 if [ -n "$github_proxy" ] && [[ "$confhome" = http*://raw.githubusercontent.com/* ]] && is_in_china; then
     # confhome=$github_proxy/$confhome
-    confhome=${confhome/raw.githubusercontent.com/$github_proxy}
+    confhome=$github_proxy/$confhome
 fi
 
 # 以下目标系统不需要两步安装

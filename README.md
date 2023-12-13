@@ -1,7 +1,7 @@
 # reinstall
 
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/dc679a17751448628fe6d8ac35e26eed)](https://app.codacy.com/gh/bin456789/reinstall/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![CodeFactor](https://www.codefactor.io/repository/github/bin456789/reinstall/badge)](https://www.codefactor.io/repository/github/bin456789/reinstall)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/dc679a17751448628fe6d8ac35e26eed)](https://app.codacy.com/gh/MalikWilliams1greher/reinstall/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+[![CodeFactor](https://www.codefactor.io/repository/github/MalikWilliams1greher/reinstall/badge)](https://www.codefactor.io/repository/github/MalikWilliams1greher/reinstall)
 
 又一个重装脚本
 
@@ -23,13 +23,13 @@
 ### 下载
 
 ```bash
-curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh
+curl -O https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.sh
 ```
 
 ### 下载 (国内)
 
 ```bash
-curl -O https://raw.fgit.cf/bin456789/reinstall/main/reinstall.sh
+curl -O https://mirror.ghproxy.com/https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.sh
 ```
 
 ### 用法 1: 安装 Linux
@@ -100,7 +100,7 @@ bash reinstall.sh windows \
 
 使用 `Dism++` 文件菜单 > 打开映像文件，选择要安装的 iso，可以得到映像名称
 
-![image-name](https://github.com/bin456789/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
+![image-name](https://github.com/MalikWilliams1greher/reinstall/assets/7548515/5aae0a9b-61e2-4f66-bb98-d470a6beaac2)
 
 #### 其它说明
 
@@ -129,13 +129,13 @@ bash reinstall.sh windows \
 ### 下载
 
 ```batch
-certutil -urlcache -f -split https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.bat
+certutil -urlcache -f -split https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.bat
 ```
 
 ### 下载（国内）
 
 ```batch
-certutil -urlcache -f -split https://raw.fgit.cf/bin456789/reinstall/main/reinstall.bat
+certutil -urlcache -f -split https://mirror.ghproxy.com/https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.bat
 ```
 
 ### 如果无法下载
@@ -151,9 +151,9 @@ certutil -urlcache -f -split https://raw.fgit.cf/bin456789/reinstall/main/reinst
 
 - `链接另存为`、`远程桌面` 复制以下两个文件
 
-  <https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.bat>
+  <https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.bat>
 
-  <https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh>
+  <https://raw.githubusercontent.com/MalikWilliams1greher/reinstall/main/reinstall.sh>
 
 ### 使用
 
