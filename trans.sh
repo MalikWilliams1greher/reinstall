@@ -438,6 +438,70 @@ to_lower() {
     tr '[:upper:]' '[:lower:]'
 }
 
+get_part_num_by_part() {
+    dev_part=$1
+    echo "$dev_part" | grep -o '[0-9]*' | tail -1
+}
+
+get_fallback_efi_file_name() {
+    case $(arch) in
+    x86_64) echo bootx64.efi ;;
+    aarch64) echo bootaa64.efi ;;
+    *) error_and_exit ;;
+    esac
+}
+
+del_invalid_efi_entry() {
+    apk add lsblk efibootmgr
+
+    efibootmgr --quiet --remove-dups
+
+    while read -r line; do
+        part_uuid=$(echo "$line" | awk -F ',' '{print $3}')
+        efi_index=$(echo "$line" | grep_efi_index)
+        if ! lsblk -o PARTUUID | grep "$part_uuid"; then
+            echo "Delete invalid EFI Entry: $line"
+            efibootmgr --quiet --bootnum "$efi_index" --delete-bootnum
+        fi
+    done < <(efibootmgr | grep 'HD(.*,GPT,')
+}
+
+grep_efi_index() {
+    awk -F '*' '{print $1}' | sed 's/Boot//'
+}
+
+# 某些机器可能不会回落到 bootx64.efi
+# 因此手动添加一个回落项
+add_fallback_efi_to_nvram() {
+    apk add lsblk efibootmgr
+
+    EFI_UUID=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+    efi_row=$(lsblk /dev/$xda -ro NAME,PARTTYPE,PARTUUID | grep -i "$EFI_UUID")
+    efi_part_uuid=$(echo "$efi_row" | awk '{print $3}')
+    efi_part_name=$(echo "$efi_row" | awk '{print $1}')
+    efi_part_num=$(get_part_num_by_part "$efi_part_name")
+    efi_file=$(get_fallback_efi_file_name)
+
+    # 创建条目，先判断是否已经存在
+    if ! efibootmgr | grep -i "HD($efi_part_num,GPT,$efi_part_uuid,.*)/File(\\\EFI\\\boot\\\\$efi_file)"; then
+        fallback_id=$(efibootmgr --create-only \
+            --disk "/dev/$xda" \
+            --part "$efi_part_num" \
+            --label "fallback" \
+            --loader "\\EFI\\boot\\$efi_file" |
+            tail -1 | grep_efi_index)
+
+        # 添加到最后
+        orig_order=$(efibootmgr | grep -F BootOrder: | awk '{print $2}')
+        if [ -n "$orig_order" ]; then
+            new_order="$orig_order,$fallback_id"
+        else
+            new_order="$fallback_id"
+        fi
+        efibootmgr --bootorder "$new_order"
+    fi
+}
+
 unix2dos() {
     target=$1
 
@@ -660,6 +724,13 @@ EOF
         fi
     fi
 
+    # setup-disk 安装 grub 跳过了添加引导项到 nvram
+    # 防止部分机器不会 fallback 到 bootx64.efi
+    if is_efi; then
+        apk add efibootmgr
+        sed -i 's/--no-nvram//' /sbin/setup-disk
+    fi
+
     # 安装到硬盘
     # alpine默认使用 syslinux (efi 环境除外)，这里强制使用 grub，方便用脚本再次重装
     KERNELOPTS="$(get_ttys console=)"
@@ -670,6 +741,11 @@ EOF
     # 3.19 或以上，非 efi 需要手动安装 grub
     if ! is_efi && grep -F '3.19' /etc/alpine-release; then
         grub-install --boot-directory=/os/boot --target=i386-pc /dev/$xda
+    fi
+
+    # 删除无效的 efi 条目
+    if is_efi; then
+        del_invalid_efi_entry
     fi
 
     # 是否保留 swap
@@ -1219,6 +1295,16 @@ EOF
         mount_pseudo_fs $os_dir
         chroot $os_dir zypper install -y wicked
         rm -f $os_dir/etc/resolv.conf
+    fi
+
+    # arch
+    if [ -f $os_dir/etc/arch-release ]; then
+        rm $os_dir/etc/resolv.conf
+        cp /etc/resolv.conf $os_dir/etc/resolv.conf
+        mount_pseudo_fs $os_dir
+        chroot $os_dir pacman-key --init
+        chroot $os_dir pacman-key --populate
+        rm $os_dir/etc/resolv.conf
     fi
 
     # gentoo
@@ -1887,9 +1973,9 @@ install_windows() {
 
         case "$sys" in
         # https://github.com/virtio-win/virtio-win-pkg-scripts/issues/40
-        w7) dir=archive-virtio/virtio-win-0.1.173-9 ;;
+        w7 | 2k8*) dir=archive-virtio/virtio-win-0.1.173-9 ;;
         # https://github.com/virtio-win/virtio-win-pkg-scripts/issues/61
-        2k12*) dir=archive-virtio/virtio-win-0.1.215-1 ;;
+        w8* | 2k12*) dir=archive-virtio/virtio-win-0.1.215-1 ;;
         *) dir=stable-virtio ;;
         esac
 
@@ -1929,9 +2015,9 @@ install_windows() {
     fi
 
     # 修改应答文件
-    download $confhome/windows.xml /tmp/Autounattend.xml
+    download $confhome/windows.xml /tmp/autounattend.xml
     locale=$(wiminfo $install_wim | grep 'Default Language' | head -1 | awk '{print $NF}')
-    sed -i "s|%arch%|$arch|; s|%image_name%|$image_name|; s|%locale%|$locale|" /tmp/Autounattend.xml
+    sed -i "s|%arch%|$arch|; s|%image_name%|$image_name|; s|%locale%|$locale|" /tmp/autounattend.xml
 
     # 修改 disk_id
     if false; then
@@ -1943,13 +2029,13 @@ install_windows() {
         else
             disk_id=0
         fi
-        sed -i "s|%disk_id%|$disk_id|" /tmp/Autounattend.xml
+        sed -i "s|%disk_id%|$disk_id|" /tmp/autounattend.xml
     fi
 
     # 修改应答文件，分区配置
     if is_efi; then
-        sed -i "s|%installto_partitionid%|3|" /tmp/Autounattend.xml
-        insert_into_file /tmp/Autounattend.xml after '<ModifyPartitions>' <<EOF
+        sed -i "s|%installto_partitionid%|3|" /tmp/autounattend.xml
+        insert_into_file /tmp/autounattend.xml after '<ModifyPartitions>' <<EOF
             <ModifyPartition wcm:action="add">
                 <Order>1</Order>
                 <PartitionID>1</PartitionID>
@@ -1966,8 +2052,8 @@ install_windows() {
             </ModifyPartition>
 EOF
     else
-        sed -i "s|%installto_partitionid%|1|" /tmp/Autounattend.xml
-        insert_into_file /tmp/Autounattend.xml after '<ModifyPartitions>' <<EOF
+        sed -i "s|%installto_partitionid%|1|" /tmp/autounattend.xml
+        insert_into_file /tmp/autounattend.xml after '<ModifyPartitions>' <<EOF
             <ModifyPartition wcm:action="add">
                 <Order>1</Order>
                 <PartitionID>1</PartitionID>
@@ -1976,12 +2062,14 @@ EOF
 EOF
     fi
 
-    #     # ei.cfg
-    #     cat <<EOF >/os/installer/sources/ei.cfg
-    #         [Channel]
-    #         OEM
-    # EOF
-    #     unix2dos /os/installer/sources/ei.cfg
+    # ei.cfg
+    if false; then
+        cat <<EOF >/os/installer/sources/EI.CFG
+[Channel]
+_Default
+EOF
+        unix2dos /os/installer/sources/EI.CFG
+    fi
 
     # 挂载 boot.wim
     mkdir -p /wim
@@ -2021,10 +2109,10 @@ EOF
     fi
 
     # 复制应答文件
-    # 移除注释，否则 windows-setup.bat 重新生成的 Autounattend.xml 有问题
+    # 移除注释，否则 windows-setup.bat 重新生成的 autounattend.xml 有问题
     apk add xmlstarlet
-    xmlstarlet ed -d '//comment()' /tmp/Autounattend.xml >/wim/Autounattend.xml
-    unix2dos /wim/Autounattend.xml
+    xmlstarlet ed -d '//comment()' /tmp/autounattend.xml >/wim/autounattend.xml
+    unix2dos /wim/autounattend.xml
 
     # 复制安装脚本
     # https://slightlyovercomplicated.com/2016/11/07/windows-pe-startup-sequence-explained/
@@ -2046,7 +2134,7 @@ EOF
     if [[ "$install_wim" = '*.wim' ]]; then
         wimmountrw $install_wim "$image_name" /wim/
         if false; then
-            # 使用 Autounattend.xml
+            # 使用 autounattend.xml
             # win7 在此阶段找不到网卡
             download $confhome/windows-resize.bat /wim/windows-resize.bat
             create_win_set_netconf_script /wim/windows-set-netconf.bat
@@ -2228,6 +2316,12 @@ else
     else
         install_redhat_ubuntu
     fi
+fi
+
+# alpine 因内存容量问题，单独处理
+if is_efi && [ "$distro" != "alpine" ]; then
+    del_invalid_efi_entry
+    add_fallback_efi_to_nvram
 fi
 
 echo 'done'

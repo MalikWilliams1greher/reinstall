@@ -21,7 +21,7 @@ usage_and_exit() {
 Usage: reinstall.sh centos   7|8|9
                     alma     8|9
                     rocky    8|9
-                    fedora   37|38
+                    fedora   38|39
                     debian   10|11|12
                     ubuntu   20.04|22.04
                     alpine   3.16|3.17|3.18|3.19
@@ -31,6 +31,8 @@ Usage: reinstall.sh centos   7|8|9
                     dd       --img=http://xxx
                     windows  --iso=http://xxx --image-name='windows xxx'
                     netboot.xyz
+
+Homepage: https://github.com/bin456789/reinstall
 EOF
     exit 1
 }
@@ -311,15 +313,12 @@ setos() {
     }
 
     setos_alpine() {
-        flavour=lts
-        if is_virt; then
-            # alpine aarch64 3.18 才有 virt 直连链接
-            if [ "$basearch" = aarch64 ]; then
-                install_pkg bc
-                (($(echo "$releasever >= 3.18" | bc))) && flavour=virt
-            else
-                flavour=virt
-            fi
+        is_virt && flavour=virt || flavour=lts
+
+        # alpine aarch64 3.16/3.17 lts 才有直连链接
+        if [ "$basearch" = aarch64 ] &&
+            { [ "$releasever" = 3.16 ] || [ "$releasever" = 3.17 ]; }; then
+            flavour=lts
         fi
 
         # 不要用https 因为甲骨文云arm initramfs阶段不会从硬件同步时钟，导致访问https出错
@@ -616,7 +615,7 @@ verify_os_name() {
         'centos   7|8|9' \
         'alma     8|9' \
         'rocky    8|9' \
-        'fedora   37|38' \
+        'fedora   38|39' \
         'debian   10|11|12' \
         'ubuntu   20.04|22.04' \
         'alpine   3.16|3.17|3.18|3.19' \
@@ -804,8 +803,25 @@ is_efi() {
     fi
 }
 
+is_secure_boot_enabled() {
+    if is_efi; then
+        if is_in_windows; then
+            reg query 'HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\State' /v UEFISecureBootEnabled | grep 0x1 && return 0
+        else
+            # mokutil --sb-state
+            dmesg | grep -i 'Secure boot enabled' && return 0
+        fi
+    fi
+    return 1
+}
+
 is_use_grub() {
     ! { is_netboot_xyz && is_efi; }
+}
+
+# 只有 linux bios 是用本机的 grub
+is_use_local_grub() {
+    is_use_grub && ! is_in_windows && ! is_efi
 }
 
 to_upper() {
@@ -832,10 +848,18 @@ collect_netconf() {
 
         # 部分机器精简了 powershell
         # 所以不要用 powershell 获取网络信息
-        ids=$(wmic nic where "PhysicalAdapter=true and MACAddress is not null and PNPDeviceID like '%VEN_%&DEV_%'" get InterfaceIndex | del_cr | sed '1d')
+        # ids=$(wmic nic where "PhysicalAdapter=true and MACAddress is not null and (PNPDeviceID like '%VEN_%&DEV_%' or PNPDeviceID like '%{F8615163-DF3E-46C5-913F-F2D2F965ED0E}%')" get InterfaceIndex | del_cr | sed '1d')
+
+        # 否        手动        0    0.0.0.0/0                  19  192.168.1.1
+        # 否        手动        0    0.0.0.0/0                  59  nekoray-tun
+        ids="
+        $(netsh int ipv4 show route | grep --text -F '0.0.0.0/0' | awk '$6 ~ /\./ {print $5}')
+        $(netsh int ipv6 show route | grep --text -F '::/0' | awk '$6 ~ /:/ {print $5}')
+        "
+        ids=$(echo "$ids" | sort -u)
         for id in $ids; do
             config=$(wmic nicconfig where "InterfaceIndex='$id'" get MACAddress,IPAddress,IPSubnet,DefaultIPGateway /format:list | del_cr)
-            # 排除 IP/子网/网关为空的
+            # 排除 IP/子网/网关/MAC 为空的
             if grep -q '=$' <<<"$config"; then
                 continue
             fi
@@ -934,6 +958,13 @@ add_efi_entry_in_windows() {
     mkdir -p $dist_dir
     cp -f "$source" "$dist_dir/$basename"
 
+    # 如果 {fwbootmgr} displayorder 为空
+    # 执行 bcdedit /copy '{bootmgr}' 会报错
+    # 例如 azure windows 2016 模板
+    # 要先设置默认的 {fwbootmgr} displayorder
+    # https://github.com/hakuna-m/wubiuefi/issues/286
+    bcdedit /set '{fwbootmgr}' displayorder '{bootmgr}' /addfirst
+
     # 添加启动项
     id=$(bcdedit /copy '{bootmgr}' /d "$(get_entry_name)" | grep -o '{.*}')
     bcdedit /set $id device partition=$x:
@@ -942,7 +973,23 @@ add_efi_entry_in_windows() {
 }
 
 get_maybe_efi_dirs_in_linux() {
-    mount | awk '$5=="vfat" {print $3}' | grep -E '/boot|/efi'
+    # arch云镜像efi分区挂载在/efi，且使用 autofs，挂载后会有两个 /efi 条目
+    mount | awk '$5=="vfat" || $5=="autofs" {print $3}' | grep -E '/boot|/efi' | sort | uniq
+}
+
+get_disk_by_part() {
+    dev_part=$1
+    install_pkg lsblk
+    lsblk -rn --inverse "$dev_part" | grep -w disk | awk '{print $1}'
+}
+
+get_part_num_by_part() {
+    dev_part=$1
+    grep -o '[0-9]*' <<<"$dev_part" | tail -1
+}
+
+grep_efi_index() {
+    awk -F '*' '{print $1}' | sed 's/Boot//'
 }
 
 add_efi_entry_in_linux() {
@@ -955,22 +1002,80 @@ add_efi_entry_in_linux() {
             dist_dir=$efi_part/EFI/reinstall
             basename=$(basename $source)
             mkdir -p $dist_dir
-            cp -f "$source" "$dist_dir/$basename"
 
-            # disk=$($grub-probe -t device "$dist")
-            install_pkg findmnt
-            disk=$(findmnt -T "$dist_dir" -no SOURCE)
-            efibootmgr --quiet --create-only \
-                --disk "$disk" \
+            if [[ "$source" = http* ]]; then
+                curl -Lo "$dist_dir/$basename" "$source"
+            else
+                cp -f "$source" "$dist_dir/$basename"
+            fi
+
+            if false; then
+                grub_probe="$(command -v grub-probe grub2-probe)"
+                dev_part="$("$grub_probe" -t device "$dist_dir")"
+            else
+                install_pkg findmnt
+                # arch findmnt 会得到
+                # systemd-1
+                # /dev/sda2
+                dev_part=$(findmnt -T "$dist_dir" -no SOURCE | grep '^/dev/')
+            fi
+
+            id=$(efibootmgr --create-only \
+                --disk "/dev/$(get_disk_by_part $dev_part)" \
+                --part "$(get_part_num_by_part $dev_part)" \
                 --label "$(get_entry_name)" \
-                --loader "\\EFI\\reinstall\\$basename"
-            id=$(efibootmgr | grep "$(get_entry_name)" | grep -oE '[0-9]{4}')
+                --loader "\\EFI\\reinstall\\$basename" |
+                tail -1 | grep_efi_index)
             efibootmgr --bootnext $id
             return
         fi
     done
 
     error_and_exit "Can't find efi partition."
+}
+
+install_grub_linux_efi() {
+    info 'download grub efi'
+
+    if [ "$basearch" = aarch64 ]; then
+        grub_efi=grubaa64.efi
+    else
+        grub_efi=grubx64.efi
+    fi
+
+    # fedora x86_64 的 efi 无法识别 opensuse tumbleweed 的 btrfs
+    # opensuse tumbleweed aarch64 的 efi 无法识别 alpine 3.19 的内核
+    if [ "$basearch" = aarch64 ]; then
+        efi_distro=fedora
+    else
+        efi_distro=opensuse
+    fi
+
+    if [ "$efi_distro" = fedora ]; then
+        fedora_ver=39
+
+        if is_in_china; then
+            mirror=https://mirrors.tuna.tsinghua.edu.cn/fedora
+        else
+            mirror=https://download.fedoraproject.org/pub/fedora/linux
+        fi
+
+        curl -Lo /tmp/$grub_efi $mirror/releases/$fedora_ver/Everything/$basearch/os/EFI/BOOT/$grub_efi
+    else
+        if is_in_china; then
+            mirror=https://mirror.sjtu.edu.cn/opensuse
+        else
+            mirror=https://download.opensuse.org
+        fi
+
+        file=tumbleweed/repo/oss/EFI/BOOT/grub.efi
+        if [ "$basearch" = aarch64 ]; then
+            file=ports/aarch64/$file
+        fi
+        curl -Lo /tmp/$grub_efi $mirror/$file
+    fi
+
+    add_efi_entry_in_linux /tmp/$grub_efi
 }
 
 install_grub_win() {
@@ -986,8 +1091,9 @@ install_grub_win() {
     grub=$grub_dir/grub
 
     # 设置 grub 内嵌的模块
-    grub_modules+=" normal minicmd ls echo test cat reboot halt linux linux16 chain search all_video configfile"
-    grub_modules+=" scsi part_msdos part_gpt fat ntfs ntfscomp ext2 lvm xfs lzopio xzio gzio zstd"
+    # 原系统是 windows，因此不需要 ext2 lvm xfs btrfs
+    grub_modules+=" normal minicmd serial ls echo test cat reboot halt linux linux16 chain search all_video configfile"
+    grub_modules+=" scsi part_msdos part_gpt fat ntfs ntfscomp lzopio xzio gzio zstd"
     if ! is_efi; then
         grub_modules+=" biosdisk"
     fi
@@ -1077,7 +1183,7 @@ build_nextos_cmdline() {
     if [ $nextos_distro = alpine ]; then
         nextos_cmdline="alpine_repo=$nextos_repo modloop=$nextos_modloop"
     elif [ $nextos_distro = debian ]; then
-        nextos_cmdline="lowmem=+1 lowmem/low=1 auto=true priority=critical url=$nextos_ks"
+        nextos_cmdline="lowmem/low=1 auto=true priority=critical url=$nextos_ks"
     else
         # redhat
         nextos_cmdline="root=live:$nextos_squashfs inst.ks=$nextos_ks"
@@ -1292,14 +1398,19 @@ while true; do
     esac
 done
 
-# 不支持容器虚拟化
-assert_not_in_container
-
 # 检查目标系统名
 verify_os_name "$@"
 
 # 检查必须的参数
 verify_os_args
+
+# 不支持容器虚拟化
+assert_not_in_container
+
+# 不支持安全启动
+if is_secure_boot_enabled; then
+    error_and_exit "Not Supported with secure boot enabled."
+fi
 
 # win系统盘
 if is_in_windows; then
@@ -1372,32 +1483,22 @@ if is_efi; then
         rm -f /cygdrive/$c/grub.cfg
 
         bcdedit /set '{fwbootmgr}' bootsequence '{bootmgr}'
-        bcdedit /enum bootmgr | grep --text -B3 'reinstall.*' | awk '{print $2}' | grep '{.*}' |
+        bcdedit /enum bootmgr | grep --text -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
             xargs -I {} cmd /c bcdedit /delete {}
     else
-        maybe_efi_dirs=$(get_maybe_efi_dirs_in_linux)
-        find $maybe_efi_dirs /boot -type f -name 'custom.cfg' -exec rm -f {} \;
+        # shellcheck disable=SC2046
+        find $(get_maybe_efi_dirs_in_linux) /boot -type f -name 'custom.cfg' -exec rm -f {} \;
 
         install_pkg efibootmgr
         efibootmgr | grep -q 'BootNext:' && efibootmgr --quiet --delete-bootnext
-        efibootmgr | grep 'reinstall.*' | grep -oE '[0-9]{4}' |
+        efibootmgr | grep 'reinstall' | grep_efi_index |
             xargs -I {} efibootmgr --quiet --bootnum {} --delete-bootnum
     fi
 fi
 
-# grub
-if is_use_grub; then
-    if is_in_windows; then
-        install_grub_win
-    else
-        if is_have_cmd grub2-mkconfig; then
-            grub=grub2
-        elif is_have_cmd grub-mkconfig; then
-            grub=grub
-        else
-            error_and_exit "grub not found"
-        fi
-    fi
+# 有的机器开启了 kexec，例如腾讯云轻量 debian，要禁用
+if ! is_in_windows && [ -f /etc/default/kexec ]; then
+    sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
 fi
 
 # 下载 netboot.xyz / 内核
@@ -1418,41 +1519,74 @@ else
     info download vmlnuz and initrd
     curl -Lo /reinstall-vmlinuz $nextos_vmlinuz
     curl -Lo /reinstall-initrd $nextos_initrd
+fi
 
-    if [ "$nextos_distro" = alpine ]; then
-        mod_alpine_initrd
+# 修改 alpine initrd
+if [ "$nextos_distro" = alpine ]; then
+    mod_alpine_initrd
+fi
+
+# 将内核/netboot.xyz.lkrn 放到正确的位置
+if is_use_grub; then
+    if is_in_windows; then
+        mv /reinstall-vmlinuz /cygdrive/$c/
+        is_have_initrd && mv /reinstall-initrd /cygdrive/$c/
+    else
+        if is_os_in_btrfs && is_os_in_subvol; then
+            cp_to_btrfs_root /reinstall-vmlinuz
+            is_have_initrd && cp_to_btrfs_root /reinstall-initrd
+        fi
     fi
 fi
 
+# grub
 if is_use_grub; then
-    info 'create grub config'
-    # linux grub
-    if ! is_in_windows; then
-        if is_have_cmd update-grub; then
-            # alpine debian ubuntu
-            grub_cfg=$(grep -o '[^ ]*grub.cfg' "$(get_cmd_path update-grub)" | head -1)
-        else
-            # 找出主配置文件（含有menuentry|blscfg）
-            # 如果是efi，先搜索efi目录
-            # arch云镜像efi分区挂载在/efi
-            if is_efi; then
-                efi_dir=$(get_maybe_efi_dirs_in_linux)
-            fi
-            grub_cfg=$(
-                find $efi_dir /boot/grub* \
-                    -type f -name grub.cfg \
-                    -exec grep -E -l 'menuentry|blscfg' {} \;
-            )
+    # win 使用外部 grub
+    if is_in_windows; then
+        install_grub_win
+    else
+        # linux aarch64 efi 要用去除了内核 magic number 校验的 grub
+        # 为了方便测试，linux x86 efi 也是用外部 grub
+        if is_efi; then
+            install_grub_linux_efi
+        fi
+    fi
 
-            if [ "$(wc -l <<<"$grub_cfg")" -gt 1 ]; then
-                error_and_exit 'find multi grub.cfg files.'
+    info 'create grub config'
+
+    # 寻找 grub.cfg
+    if is_in_windows; then
+        grub_cfg=/cygdrive/$c/grub.cfg
+    else
+        # linux
+        if is_efi; then
+            # 现在 linux-efi 是使用 reinstall 目录下的 grub
+            # shellcheck disable=SC2046
+            efi_reinstall_dir=$(find $(get_maybe_efi_dirs_in_linux) -type d -name "reinstall" | head -1)
+            grub_cfg=$efi_reinstall_dir/grub.cfg
+        else
+            if is_have_cmd update-grub; then
+                # alpine debian ubuntu
+                grub_cfg=$(grep -o '[^ ]*grub.cfg' "$(get_cmd_path update-grub)" | head -1)
+            else
+                # 找出主配置文件（含有menuentry|blscfg）
+                # 现在 efi 用下载的 grub，因此不需要查找 efi 目录
+                grub_cfg=$(
+                    find /boot/grub* \
+                        -type f -name grub.cfg \
+                        -exec grep -E -l 'menuentry|blscfg' {} \;
+                )
+
+                if [ "$(wc -l <<<"$grub_cfg")" -gt 1 ]; then
+                    error_and_exit 'find multi grub.cfg files.'
+                fi
             fi
         fi
+    fi
 
-        # 有些机子例如hython debian的grub.cfg少了40_custom 41_custom
-        # 所以先重新生成 grub.cfg
-        $grub-mkconfig -o $grub_cfg
-
+    # 判断用 linux 还是 linuxefi
+    # 现在 efi 用下载的 grub，因此不需要判断 linux 或 linuxefi
+    if false && is_use_local_grub; then
         # 在x86 efi机器上，不同版本的 grub 可能用 linux 或 linuxefi 加载内核
         # 通过检测原有的条目有没有 linuxefi 字样就知道当前 grub 用哪一种
         if [ -d /boot/loader/entries/ ]; then
@@ -1463,9 +1597,28 @@ if is_use_grub; then
         fi
     fi
 
-    # 生成 custom.cfg (linux) 或者 grub.cfg (win)
-    is_in_windows && custom_cfg=/cygdrive/$c/grub.cfg || custom_cfg=$(dirname $grub_cfg)/custom.cfg
+    # 找到 grub 程序的前缀
+    # 并重新生成 grub.cfg
+    # 因为有些机子例如hython debian的grub.cfg少了40_custom 41_custom
+    if is_use_local_grub; then
+        if is_have_cmd grub2-mkconfig; then
+            grub=grub2
+        elif is_have_cmd grub-mkconfig; then
+            grub=grub
+        else
+            error_and_exit "grub not found"
+        fi
+        $grub-mkconfig -o $grub_cfg
+    fi
 
+    # 选择用 custom.cfg (linux-bios) 还是 grub.cfg (win/linux-efi)
+    if is_use_local_grub; then
+        target_cfg=$(dirname $grub_cfg)/custom.cfg
+    else
+        target_cfg=$grub_cfg
+    fi
+
+    # 生成 linux initrd 命令
     if is_netboot_xyz; then
         linux_cmd="linux16 /reinstall-vmlinuz"
     else
@@ -1474,33 +1627,20 @@ if is_use_grub; then
         initrd_cmd="initrd$efi /reinstall-initrd"
     fi
 
-    echo $custom_cfg
-    cat <<EOF | tee $custom_cfg
+    # 生成 grub 配置
+    echo $target_cfg
+    cat <<EOF | tee $target_cfg
 set timeout=5
 menuentry "$(get_entry_name)" {
     insmod all_video
-    insmod lvm
-    insmod xfs
     search --no-floppy --file --set=root /reinstall-vmlinuz
     $linux_cmd
     $initrd_cmd
 }
 EOF
 
-    if is_in_windows; then
-        mv /reinstall-vmlinuz /cygdrive/$c/
-        is_have_initrd && mv /reinstall-initrd /cygdrive/$c/
-    else
-        if is_os_in_btrfs && is_os_in_subvol; then
-            cp_to_btrfs_root /reinstall-vmlinuz
-            is_have_initrd && cp_to_btrfs_root /reinstall-initrd
-        fi
-
-        # 有的机器开启了 kexec，例如腾讯云轻量 debian，要禁用
-        if [ -f /etc/default/kexec ]; then
-            sed -i 's/LOAD_KEXEC=true/LOAD_KEXEC=false/' /etc/default/kexec
-        fi
-
+    # 设置重启引导项
+    if is_use_local_grub; then
         $grub-reboot "$(get_entry_name)"
     fi
 fi
